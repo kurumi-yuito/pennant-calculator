@@ -78,3 +78,76 @@ export function parseScheduleMonthHtml(html: string, month: number, seasonYear: 
   }
   return games
 }
+
+/**
+ * 勝敗表（https://npb.jp/games/<year>/）の当日差分反映で使う、1 カードごとの生データ。
+ * parseScheduleMonthHtml と違い、スコア（終了済みの場合）と状態（終了済み/未開催/中止）を
+ * 保持する。既存の parseScheduleMonthHtml / CompletedGame には一切手を加えず、
+ * 独立した実装として追加する（既存のテスト・挙動への影響をゼロにするため）。
+ */
+export type ScheduleGameStatus = 'finished' | 'scheduled' | 'cancelled'
+
+export type ScheduleRow = {
+  /** ISO 日付 (YYYY-MM-DD) */
+  date: string
+  /** 12球団のいずれかに該当する場合のみ id。オールスターゲーム等は null */
+  teamA: string | null
+  teamB: string | null
+  status: ScheduleGameStatus
+  /** status === 'finished' のときのみ値が入る */
+  scoreA?: number
+  scoreB?: number
+}
+
+/**
+ * 1 か月分の日程・結果ページから、終了済み・未開催・中止すべてのカードの生データを取り出す。
+ * parseScheduleMonthHtml（終了済みカードのみに絞った既存関数）とは独立した実装。
+ */
+export function parseScheduleMonthRows(html: string, month: number, seasonYear: number): ScheduleRow[] {
+  const tbodyMatch = html.match(/<tbody>([\s\S]*?)<\/tbody>/)
+  if (!tbodyMatch) {
+    throw new ScheduleParseError(`${seasonYear}年${month}月の日程ページに本体 (tbody) が見つかりません`)
+  }
+  const rows = [...tbodyMatch[1].matchAll(/<tr id="date(\d{4})"[^>]*>([\s\S]*?)<\/tr>/g)]
+  if (rows.length === 0) {
+    throw new ScheduleParseError(`${seasonYear}年${month}月の日程ページに試合行が見つかりません`)
+  }
+
+  const result: ScheduleRow[] = []
+  for (const [, dateSuffix, row] of rows) {
+    const team1Match = row.match(/<div class="team1">([\s\S]*?)<\/div>/)
+    const team2Match = row.match(/<div class="team2">([\s\S]*?)<\/div>/)
+    if (!team1Match || !team2Match) continue
+
+    const month2 = dateSuffix.slice(0, 2)
+    const day2 = dateSuffix.slice(2, 4)
+    const date = `${seasonYear}-${month2}-${day2}`
+    const team1 = findTeamByOfficialName(stripTags(team1Match[1]))
+    const team2 = findTeamByOfficialName(stripTags(team2Match[1]))
+    const teamA = team1?.id ?? null
+    const teamB = team2?.id ?? null
+
+    if (/<div class="cancel">/.test(row)) {
+      result.push({ date, teamA, teamB, status: 'cancelled' })
+      continue
+    }
+
+    const scoreMatch = row.match(
+      /<div class="score1">(\d+)<\/div>\s*<div class="state">[^<]*<\/div>\s*<div class="score2">(\d+)<\/div>/,
+    )
+    if (!scoreMatch) {
+      result.push({ date, teamA, teamB, status: 'scheduled' })
+      continue
+    }
+
+    result.push({
+      date,
+      teamA,
+      teamB,
+      status: 'finished',
+      scoreA: Number(scoreMatch[1]),
+      scoreB: Number(scoreMatch[2]),
+    })
+  }
+  return result
+}

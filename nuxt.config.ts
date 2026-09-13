@@ -30,7 +30,49 @@ export default defineNuxtConfig({
         { name: 'twitter:description', content: OG_DESCRIPTION },
         { name: 'twitter:image', content: OG_IMAGE },
       ],
+      script: [
+        {
+          key: 'ga4-loader',
+          src: 'https://www.googletagmanager.com/gtag/js?id=G-QYPXN46YN7',
+          async: true,
+        },
+        {
+          key: 'ga4-init',
+          innerHTML: `
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-QYPXN46YN7');
+          `,
+        },
+      ],
     },
   },
-  nitro: process.env.NITRO_PRESET ? { preset: process.env.NITRO_PRESET } : {},
+  // NITRO_PRESET が未指定のときは従来どおり Node 向けにビルドする（ローカル確認・既存の
+  // 動作検証はすべてこの経路）。cloudflare* プリセットが指定されたときだけ、Cloudflare
+  // Workers（Static Assets）向けの追加設定を足す。アプリ本体のロジックには影響しない。
+  nitro: {
+    ...(process.env.NITRO_PRESET ? { preset: process.env.NITRO_PRESET } : {}),
+    ...(process.env.NITRO_PRESET?.startsWith('cloudflare')
+      ? {
+          cloudflare: {
+            // .output/server/wrangler.json と、プロジェクトルートの
+            // .wrangler/deploy/config.json（そこへのポインタ）を自動生成させる。
+            // これにより `npx wrangler deploy` をプロジェクトルートでそのまま実行するだけで
+            // Nuxt/Nitro のビルド出力（.output/server/index.mjs, .output/public）を
+            // 自動検出してデプロイできる。
+            deployConfig: true,
+            // server/api/standings.get.ts が process.env を参照するため、
+            // Workers ランタイムで process が使えるように nodejs_compat を有効化する
+            nodeCompat: true,
+            // Worker 名を明示する（未指定だと git remote 等から自動生成された名前になり
+            // 予測しづらいため）。同名の Cloudflare Pages プロジェクトが別に存在するが、
+            // Workers と Pages は別の名前空間なので衝突しない。
+            wrangler: {
+              name: 'pennant-calculator',
+            },
+          },
+        }
+      : {}),
+  },
 })

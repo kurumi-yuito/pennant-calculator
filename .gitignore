@@ -5,3 +5,9 @@ node_modules
 dist
 .env
 *.log
+
+# Cloudflare の生成設定・ローカルDB・一時ビルド
+/.wrangler/
+
+# ローカルのタスク実行ロック
+/.claude/scheduled_tasks.lock

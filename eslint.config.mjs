@@ -5,7 +5,7 @@ import globals from 'globals'
 
 export default tseslint.config(
   {
-    ignores: ['**/.nuxt/**', '**/.output/**', '**/dist/**', '**/node_modules/**', '**/coverage/**'],
+    ignores: ['**/.nuxt/**', '**/.output/**', '**/.wrangler/**', '**/dist/**', '**/node_modules/**', '**/coverage/**'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

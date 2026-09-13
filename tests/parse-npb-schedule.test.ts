@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ScheduleParseError, parseScheduleMonthHtml } from '../lib/parse-npb-schedule'
+import { ScheduleParseError, parseScheduleMonthHtml, parseScheduleMonthRows } from '../lib/parse-npb-schedule'
 
 /** 実際のページ構造を模した最小限の月別日程・結果フィクスチャ */
 function makeScheduleHtml(rows: string): string {
@@ -128,5 +128,44 @@ describe('parseScheduleMonthHtml', () => {
   it('試合行が1つも無ければ例外を投げる', () => {
     const html = `<html><body><div id="schedule_detail"><table><tbody></tbody></table></div></body></html>`
     expect(() => parseScheduleMonthHtml(html, 9, 2026)).toThrow(ScheduleParseError)
+  })
+})
+
+// standings の当日差分反映（lib/standings-diff.ts）で使う、状態・スコア付きの生データ取得。
+// parseScheduleMonthHtml とは独立した実装のため、同じ観点をここでも確認する。
+describe('parseScheduleMonthRows', () => {
+  it('終了済みカードはスコア付き・status: finished で取得する', () => {
+    const rows = parseScheduleMonthRows(makeScheduleHtml(COMPLETED_ROW), 9, 2026)
+    expect(rows).toEqual([
+      { date: '2026-09-01', teamA: 'giants', teamB: 'baystars', status: 'finished', scoreA: 4, scoreB: 3 },
+    ])
+  })
+
+  it('引き分けもスコア付き・status: finished で取得する', () => {
+    const rows = parseScheduleMonthRows(makeScheduleHtml(TIE_ROW), 9, 2026)
+    expect(rows).toEqual([
+      { date: '2026-09-02', teamA: 'fighters', teamB: 'hawks', status: 'finished', scoreA: 1, scoreB: 1 },
+    ])
+  })
+
+  it('中止カードは status: cancelled でスコア無し', () => {
+    const rows = parseScheduleMonthRows(makeScheduleHtml(CANCELED_ROW), 9, 2026)
+    expect(rows).toEqual([{ date: '2026-09-06', teamA: 'swallows', teamB: 'dragons', status: 'cancelled' }])
+  })
+
+  it('未開催（未来）のカードは status: scheduled でスコア無し', () => {
+    const rows = parseScheduleMonthRows(makeScheduleHtml(FUTURE_ROW), 9, 2026)
+    expect(rows).toEqual([{ date: '2026-09-20', teamA: 'giants', teamB: 'swallows', status: 'scheduled' }])
+  })
+
+  it('オールスターゲームは 12 球団に該当しないため teamA/teamB が null になる', () => {
+    const rows = parseScheduleMonthRows(makeScheduleHtml(ALL_STAR_ROW), 7, 2026)
+    expect(rows).toEqual([{ date: '2026-07-28', teamA: null, teamB: null, status: 'finished', scoreA: 5, scoreB: 7 }])
+  })
+
+  it('tbody が無ければ例外を投げる', () => {
+    expect(() => parseScheduleMonthRows('<html><body>メンテナンス中</body></html>', 9, 2026)).toThrow(
+      ScheduleParseError,
+    )
   })
 })

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   bindingConditions,
   buildProjection,
+  calcConditionsRange,
   calcFiveHundredLine,
   calcRankLines,
   currentRank,
@@ -282,5 +283,73 @@ describe('現在順位と一覧', () => {
     const rows = buildProjection(finished, [0])
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ wins: 0, losses: 0, finalWins: 71, finalLosses: 70 })
+  })
+})
+
+describe('calcConditionsRange（勝数ごとに他球団への条件を示す）', () => {
+  it('最初の行は possibleWins、最後の行は clinchWins と一致し、勝数は連番になる', () => {
+    const league = makeLeague(
+      [
+        { id: 'a', wins: 72, losses: 58, ties: 0 }, // 残り13
+        { id: 'b', wins: 68, losses: 62, ties: 0 }, // 残り13
+        { id: 'c', wins: 60, losses: 70, ties: 0 },
+        { id: 'd', wins: 58, losses: 72, ties: 0 },
+        { id: 'e', wins: 55, losses: 75, ties: 0 },
+        { id: 'f', wins: 50, losses: 80, ties: 0 },
+      ],
+      null,
+    )
+    const lines = calcRankLines(league, 'a', 1)
+    expect(lines?.possibleWins).not.toBeNull()
+    expect(lines?.clinchWins).not.toBeNull()
+
+    const range = calcConditionsRange(league, 'a', 1)
+    expect(range.length).toBeGreaterThan(0)
+    expect(range[0].wins).toBe(lines!.possibleWins)
+    expect(range[0].clinched).toBe(false)
+    expect(range.at(-1)!.clinched).toBe(true)
+    expect(range.at(-1)!.wins).toBe(lines!.clinchWins)
+    expect(range.at(-1)!.conditions).toEqual([])
+    for (let i = 1; i < range.length; i += 1) {
+      expect(range[i].wins).toBe(range[i - 1].wins + 1)
+    }
+    // 最短ラインの行には、bindingConditions と同じ非自明な条件が入っている
+    expect(range[0].conditions.length).toBeGreaterThan(0)
+  })
+
+  it('既に優勝確定なら、勝数0・確定の1行だけを返す', () => {
+    const league = makeLeague(
+      [
+        { id: 'a', wins: 100, losses: 20, ties: 0 }, // 残り23、圧倒的独走
+        { id: 'b', wins: 60, losses: 60, ties: 0 },
+        { id: 'c', wins: 55, losses: 65, ties: 0 },
+        { id: 'd', wins: 50, losses: 70, ties: 0 },
+        { id: 'e', wins: 45, losses: 75, ties: 0 },
+        { id: 'f', wins: 40, losses: 80, ties: 0 },
+      ],
+      null,
+    )
+    const range = calcConditionsRange(league, 'a', 1)
+    expect(range).toEqual([{ wins: 0, losses: remainingGames(league.teams[0]), clinched: true, conditions: [] }])
+  })
+
+  it('可能性が無いチームは空配列を返す', () => {
+    const league = makeLeague(
+      [
+        { id: 'a', wins: 50, losses: 80, ties: 0 }, // 残り13 → 最大63勝
+        { id: 'b', wins: 85, losses: 40, ties: 0 },
+        { id: 'c', wins: 70, losses: 60, ties: 0 },
+        { id: 'd', wins: 68, losses: 62, ties: 0 },
+        { id: 'e', wins: 66, losses: 64, ties: 0 },
+        { id: 'f', wins: 60, losses: 70, ties: 0 },
+      ],
+      null,
+    )
+    expect(calcConditionsRange(league, 'a', 1)).toEqual([])
+  })
+
+  it('存在しない球団IDなら空配列を返す', () => {
+    const league = makeLeague([{ id: 'a', wins: 70, losses: 60, ties: 0 }], null)
+    expect(calcConditionsRange(league, 'z', 1)).toEqual([])
   })
 })

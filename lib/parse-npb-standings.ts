@@ -202,8 +202,14 @@ export function parseGamesPageStandings(
     const { label, date } = parseAsOf(asOfText, seasonYear, league)
     const standings: LeagueStandings = {
       league,
+      // この時点では差分反映前なので、asOfLabel/asOfDate と sourceAsOfLabel/sourceAsOfDate は
+      // 同じ値になる。差分反映（server/api/standings.get.ts）が行われた場合、呼び出し側が
+      // asOfLabel/asOfDate/isPartialDay のみを上書きする（sourceAsOf* はここでの値を維持する）。
       asOfLabel: label,
       asOfDate: date,
+      sourceAsOfLabel: label,
+      sourceAsOfDate: date,
+      isPartialDay: false,
       teams,
       remainingHeadToHead: null,
       sourceUrl,

@@ -356,6 +356,47 @@ export function calcRankLines(
   }
 }
 
+export type ConditionsAtWins = {
+  wins: number
+  losses: number
+  /** この勝数で、他球団の結果によらず確定するか（＝それ以上は無条件） */
+  clinched: boolean
+  /** 到達可能な場合、他球団が同時に満たす必要がある条件（確定なら空） */
+  conditions: RivalCondition[]
+}
+
+/**
+ * 「最短ラインぴったり」という一番厳しい1点だけでなく、勝数を増やすほど他球団への
+ * 条件がどう緩んでいくかを示すための一覧。possibleWins から、条件なしで確定する
+ * 勝数（isClinched が true になる最小の勝数）まで、勝数ごとの条件を並べる。
+ * 判定自体は isPossible / isClinched をそのまま使い、新しい判定ロジックは追加しない。
+ * 到達不能な勝数（possibleWins 未満）は含めない。
+ */
+export function calcConditionsRange(
+  standings: LeagueStandings,
+  teamId: string,
+  targetRank: number,
+): ConditionsAtWins[] {
+  const ctx = buildContext(standings, teamId)
+  if (!ctx) return []
+  const remaining = ctx.targetRemaining
+
+  const rows: ConditionsAtWins[] = []
+  for (let n = 0; n <= remaining; n += 1) {
+    const result = isPossible(ctx, n, targetRank)
+    if (!result.ok) continue
+    const clinched = isClinched(ctx, n, targetRank)
+    rows.push({
+      wins: n,
+      losses: remaining - n,
+      clinched,
+      conditions: clinched ? [] : bindingConditions(result.conditions),
+    })
+    if (clinched) break
+  }
+  return rows
+}
+
 /**
  * 勝率 5 割ライン。
  * 今後の引き分けを 0 と仮定し、(勝 + N) / (勝 + 敗 + 残り) >= 0.5 となる最小の N を求める。

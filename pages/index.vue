@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useAnalytics } from '~/composables/useAnalytics'
 import { renderShareImagePng } from '~/composables/useShareImagePng'
 import { LEAGUE_LABEL, TOTAL_GAMES, getTeam, teamsOfLeague } from '~/lib/teams'
 import { formatWinningPercentage } from '~/lib/record'
 import {
-  bindingConditions,
   buildProjection,
+  calcConditionsRange,
   calcFiveHundredLine,
   calcRankLines,
   currentRank,
@@ -14,11 +15,12 @@ import {
 import { fiveHundredStatusLabel, rankStatusLabel, statusTone } from '~/lib/labels'
 import { buildShareImageData } from '~/lib/share-image'
 import { buildShareText, buildShareUrl, buildTwitterIntentUrl } from '~/lib/share-text'
-import type { ProjectionRow, RankLineResult } from '~/lib/scenario'
+import type { ConditionsAtWins, ProjectionRow, RankLineResult } from '~/lib/scenario'
 import type { LeagueId, StandingsPayload } from '~/lib/types'
 
 const route = useRoute()
 const router = useRouter()
+const { track } = useAnalytics()
 
 const { data, error, refresh, status } = await useFetch<StandingsPayload>('/api/standings')
 
@@ -29,6 +31,10 @@ const selectedTeamId = computed<string>({
     return typeof value === 'string' && getTeam(value) ? value : ''
   },
   set(value: string) {
+    const team = getTeam(value)
+    if (team && value !== selectedTeamId.value) {
+      track('team_select', { team: team.id, league: team.league })
+    }
     router.replace({ query: value ? { team: value } : {} })
   },
 })
@@ -64,6 +70,63 @@ const climaxSeries = computed(() =>
   standings.value ? calcRankLines(standings.value, selectedTeamId.value, 3) : null,
 )
 const fiveHundred = computed(() => (standing.value ? calcFiveHundredLine(standing.value) : null))
+
+/**
+ * 行数が多い場合、最初（最短ライン）と最後（条件なしで確定する勝数）を必ず含めつつ
+ * 均等に間引く。「最短ラインぴったり」という1点だけでなく、勝つほど他球団への条件が
+ * 緩んでいく様子をコンパクトな表で示すため。
+ */
+function sampleConditionRows(rows: ConditionsAtWins[], maxCount = 6): ConditionsAtWins[] {
+  if (rows.length <= maxCount) return rows
+  const picked: ConditionsAtWins[] = []
+  for (let i = 0; i < maxCount; i += 1) {
+    const idx = Math.round((i * (rows.length - 1)) / (maxCount - 1))
+    picked.push(rows[idx])
+  }
+  return picked.filter((row, i) => i === 0 || row.wins !== picked[i - 1].wins)
+}
+
+const championConditions = computed(() =>
+  standings.value ? sampleConditionRows(calcConditionsRange(standings.value, selectedTeamId.value, 1)) : [],
+)
+const climaxConditions = computed(() =>
+  standings.value ? sampleConditionRows(calcConditionsRange(standings.value, selectedTeamId.value, 3)) : [],
+)
+
+function formatConditions(row: ConditionsAtWins): string {
+  if (row.clinched) return '確定（他球団の結果によらず到達）'
+  if (row.conditions.length === 0) return '条件なし（他球団がどうなっても到達可能）'
+  return row.conditions
+    .map((c) => `${teamName(c.teamId)}: 残り${c.remaining}試合で${c.maxWins}勝以下`)
+    .join(' かつ ')
+}
+
+// SSR の初期結果も hydration 後に一度計測する。取得時刻だけの変化は重複扱い。
+const resultAnalyticsKey = computed(() => {
+  if (error.value || !standing.value || !champion.value || !climaxSeries.value || !fiveHundred.value) return null
+  return JSON.stringify([selectedTeamId.value, standings.value])
+})
+
+onMounted(() => {
+  watch(resultAnalyticsKey, (key) => {
+    if (!key) return
+    track('result_view', {
+      team: selectedTeamId.value,
+      championship_possible: champion.value?.status !== 'eliminated',
+      cs_possible: climaxSeries.value?.status !== 'eliminated',
+      five_hundred_possible: fiveHundred.value?.status !== 'eliminated',
+    })
+  }, { immediate: true, flush: 'post' })
+
+  watch(error, (failure) => {
+    if (!failure) return
+    const status = Number(failure.statusCode ?? failure.status ?? 0)
+    track('api_error', {
+      endpoint: '/api/standings',
+      status: Number.isFinite(status) ? status : 0,
+    })
+  }, { immediate: true, flush: 'post' })
+})
 
 const projection = computed(() => {
   if (!standing.value) return []
@@ -114,6 +177,20 @@ function winsPhrase(wins: number | null): string {
 const asOfLabel = computed(() => {
   const league = standings.value ?? data.value?.leagues[0]
   return league?.asOfLabel ?? ''
+})
+
+/**
+ * asOfLabel の直後に添える補足。勝敗表ページ自体の基準日（sourceAsOfDate）より後の
+ * NPB公式試合結果を差分反映した場合にのみ表示し、通常時は空文字（表示なし）のまま。
+ */
+const asOfStatusNote = computed(() => {
+  const league = standings.value ?? data.value?.leagues[0]
+  if (!league) return ''
+  if (league.isPartialDay) return '（終了試合のみ反映）'
+  if (league.asOfDate && league.sourceAsOfDate && league.asOfDate !== league.sourceAsOfDate) {
+    return '（NPB公式試合結果を反映）'
+  }
+  return ''
 })
 
 const fetchedAtLabel = computed(() => {
@@ -197,6 +274,7 @@ const shareStatus = ref<'idle' | 'sharing'>('idle')
  */
 async function shareResult() {
   if (typeof window === 'undefined' || !selectedTeamId.value) return
+  const team = selectedTeamId.value
   const shareUrl = buildShareUrl(window.location.origin, selectedTeamId.value)
 
   const nav = navigator as Navigator & { canShare?: (data?: ShareData) => boolean }
@@ -206,6 +284,7 @@ async function shareResult() {
     shareStatus.value = 'sharing'
     try {
       const blob = await renderShareImagePng(shareImageData.value)
+      track('share_image_generate', { team })
       const file = new File([blob], 'pennant-calculator.png', { type: 'image/png' })
       if (nav.canShare?.({ files: [file] })) {
         await nav.share({ files: [file], text: `${shareText.value}\n${shareUrl}` })
@@ -221,6 +300,7 @@ async function shareResult() {
   }
 
   const intentUrl = buildTwitterIntentUrl(shareText.value, shareUrl)
+  track('share_x_click', { team })
   window.open(intentUrl, '_blank', 'noopener,noreferrer')
 }
 </script>
@@ -230,7 +310,7 @@ async function shareResult() {
     <header class="header">
       <h1 class="h1">NPB Vまであとどのくらい？</h1>
       <p v-if="asOfLabel" class="meta">
-        {{ asOfLabel }}終了時点の順位表
+        {{ asOfLabel }}終了時点の順位表{{ asOfStatusNote }}
         <span v-if="fetchedAtLabel" class="sub">（{{ fetchedAtLabel }} 取得）</span>
       </p>
     </header>
@@ -319,14 +399,33 @@ async function shareResult() {
                 </dd>
               </div>
             </dl>
-            <div v-if="bindingConditions(champion.possibleConditions).length" class="conditions">
-              <p class="conditions-title">最短ライン達成時に必要な他球団の条件</p>
-              <ul class="conditions-list">
-                <li v-for="condition in bindingConditions(champion.possibleConditions)" :key="condition.teamId">
-                  {{ teamName(condition.teamId) }}
-                  残り{{ condition.remaining }}試合で{{ condition.maxWins }}勝以下
-                </li>
-              </ul>
+            <div v-if="championConditions.length" class="conditions">
+              <p class="conditions-title">勝数ごとに、優勝の可能性が残るために他球団が同時に満たす必要がある条件</p>
+              <div class="conditions-scroll">
+                <table class="conditions-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">勝数</th>
+                      <th scope="col">他球団への条件</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in championConditions" :key="row.wins">
+                      <td class="nowrap">{{ row.wins }}勝{{ row.losses }}敗</td>
+                      <td>{{ formatConditions(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="conditions-note">
+                勝数が多いほど他球団への条件は緩くなります。
+                <template v-if="championConditions.at(-1)?.clinched">
+                  表の最下段まで到達すれば、他球団の結果によらず優勝が確定します。
+                </template>
+                <template v-else>
+                  残り{{ remaining }}試合を全勝しても、他球団の結果次第では優勝を逃す可能性が残ります。
+                </template>
+              </p>
             </div>
           </template>
         </ScenarioCard>
@@ -374,14 +473,33 @@ async function shareResult() {
                 </dd>
               </div>
             </dl>
-            <div v-if="bindingConditions(climaxSeries.possibleConditions).length" class="conditions">
-              <p class="conditions-title">最短ライン達成時に必要な他球団の条件</p>
-              <ul class="conditions-list">
-                <li v-for="condition in bindingConditions(climaxSeries.possibleConditions)" :key="condition.teamId">
-                  {{ teamName(condition.teamId) }}
-                  残り{{ condition.remaining }}試合で{{ condition.maxWins }}勝以下
-                </li>
-              </ul>
+            <div v-if="climaxConditions.length" class="conditions">
+              <p class="conditions-title">勝数ごとに、3位以内の可能性が残るために他球団が同時に満たす必要がある条件</p>
+              <div class="conditions-scroll">
+                <table class="conditions-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">勝数</th>
+                      <th scope="col">他球団への条件</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in climaxConditions" :key="row.wins">
+                      <td class="nowrap">{{ row.wins }}勝{{ row.losses }}敗</td>
+                      <td>{{ formatConditions(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="conditions-note">
+                勝数が多いほど他球団への条件は緩くなります。
+                <template v-if="climaxConditions.at(-1)?.clinched">
+                  表の最下段まで到達すれば、他球団の結果によらず3位以内が確定します。
+                </template>
+                <template v-else>
+                  残り{{ remaining }}試合を全勝しても、他球団の結果次第では3位以内を逃す可能性が残ります。
+                </template>
+              </p>
             </div>
           </template>
         </ScenarioCard>
@@ -436,7 +554,7 @@ async function shareResult() {
             {{ shareStatus === 'sharing' ? '画像を準備中…' : 'シェアする' }}
           </button>
 
-          <ShareImagePanel v-if="shareImageData" :image-data="shareImageData" />
+          <ShareImagePanel v-if="shareImageData" :image-data="shareImageData" :team="selectedTeamId" />
         </section>
 
         <section class="notes">
@@ -463,6 +581,16 @@ async function shareResult() {
         </section>
       </template>
     </template>
+    <footer class="support">
+      <a
+        class="support-link"
+        href="https://buymeacoffee.com/yametoma"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <img src="/bmc.png" alt="Buy me a coffee" width="1090" height="306" />
+      </a>
+    </footer>
   </div>
 </template>
 
@@ -478,6 +606,30 @@ async function shareResult() {
 
 .header {
   margin-bottom: 2px;
+}
+
+.support {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.support-link {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  border-radius: 12px;
+}
+
+.support-link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 4px;
+}
+
+.support-link img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .h1 {
@@ -663,15 +815,41 @@ async function shareResult() {
 }
 
 .conditions-title {
-  margin: 0 0 4px;
+  margin: 0 0 8px;
   font-size: 0.82rem;
   color: var(--muted);
 }
 
-.conditions-list {
-  margin: 0;
-  padding-left: 1.1em;
-  font-size: 0.9rem;
+.conditions-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.conditions-table {
+  width: 100%;
+  min-width: 280px;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.conditions-table th,
+.conditions-table td {
+  padding: 6px 8px 6px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.conditions-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.conditions-note {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 .share {

@@ -199,4 +199,60 @@ UI から完全に分離した純粋関数。
 - 試合中の途中経過は使わない（順位表に反映された確定成績のみ）。
 - 残り直接対決（直接対決の依存関係）は NPB 公式の月別日程・結果ページから
   「終了済みカード数」を集計して復元する。詳細は上記「残り直接対決について」を参照。
-# pennant-calculator
+
+## Cloudflare へのデプロイ
+
+このアプリは `/api/standings` という Nitro server route（SSR API）に依存する SSR アプリのため、
+**単純な静的サイトとしては配信できない。** Cloudflare 上では **Workers（Static Assets 付き）**
+としてデプロイする（Cloudflare Pages ではない。理由は後述）。
+
+### デプロイ手順
+
+```bash
+npx wrangler login   # 初回のみ。このプロジェクトの Cloudflare アカウントにログインする
+npm run deploy:cloudflare
+```
+
+`deploy:cloudflare` は内部で次の 2 段階を行う（`package.json` 参照）:
+
+1. `NITRO_PRESET=cloudflare_module nuxt build`
+   Nitro の `cloudflare-module` プリセットでビルドし、`.output/server/index.mjs`（Worker 本体）と
+   `.output/public`（静的アセット。`og-image.png` や `_nuxt/` バンドルを含む）を生成する。
+   `nuxt.config.ts` の `nitro.cloudflare` 設定（`deployConfig: true` / `nodeCompat: true` /
+   `wrangler.name: 'pennant-calculator'`）により、このとき `.output/server/wrangler.json`
+   （実体の Wrangler 設定）と、プロジェクトルートの `.wrangler/deploy/config.json`
+   （そこへのポインタ）が自動生成される。この 2 つの設定は `NITRO_PRESET` が
+   `cloudflare` で始まる場合にのみ有効になり、通常の `npm run build`（Node 向け）には
+   一切影響しない。
+2. `wrangler deploy`
+   プロジェクトルートで引数なしのまま実行するだけで、上記のポインタ経由で自動的に
+   `.output/server/wrangler.json` を検出してデプロイする
+   （`npx wrangler deploy` による Nuxt/Nitro の自動検出。`--cwd` や `--config` の指定は不要）。
+
+`server/api/standings.get.ts` が `process.env` を参照するため、`nodejs_compat`
+互換フラグを有効化している（未設定だと Workers ランタイム上で `process is not defined` になる）。
+
+### なぜ Cloudflare Pages ではなく Workers なのか
+
+- `pennant-calculator.pages.dev` という名前の Cloudflare **Pages** プロジェクトが既に存在するが、
+  GitHub リポジトリを Pages の「Connect to Git」で接続した際の自動ビルドが Nuxt の SSR 出力
+  （Nitro server route）に対応しておらず、`/` にアクセスすると本文無しの 404 が返る状態だった
+  （`cache-control: no-store` 付きの空レスポンス。ビルド自体は「成功」扱いだが、出力が
+  このアプリの実体と合っていない）。
+- **Workers と Pages は Cloudflare 上で別の名前空間（別のリソース種別）** なので、
+  Worker 名を `pennant-calculator` にしても既存の Pages プロジェクトとは衝突しない
+  （デプロイ前に `npx wrangler deployments list --name pennant-calculator` で
+  「This Worker does not exist on your account」であることを確認済み）。
+- 既存の Pages プロジェクトはそのまま残している（削除は行っていない）。本番 URL としては
+  **今回デプロイした Worker 側のみ**を使う。紛らわしければ、Cloudflare ダッシュボードから
+  当該 Pages プロジェクトを削除するか、無関係な別用途に転用することを推奨する。
+
+### 本番 URL
+
+```
+https://pennant-calculator.mr-y50-0104.workers.dev
+```
+
+（アカウントの `workers.dev` サブドメインが変わった場合は `npx wrangler deploy` の出力に
+表示される URL を参照。`?team=<球団id>` で球団選択を保持できる — 例:
+`https://pennant-calculator.mr-y50-0104.workers.dev/?team=baystars`）

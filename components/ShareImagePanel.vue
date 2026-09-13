@@ -11,12 +11,17 @@
  *   navigator.share 経由で対応環境では画像付きの共有シートを開く。
  */
 import { ref } from 'vue'
+import { useAnalytics } from '~/composables/useAnalytics'
 import { renderShareImageCanvas } from '~/composables/useShareImagePng'
 import type { ShareImageData } from '~/lib/share-image'
 
 const props = defineProps<{
   imageData: ShareImageData
+  team: string
 }>()
+
+const { track } = useAnalytics()
+let generatedTeam = ''
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const previewUrl = ref<string | null>(null)
@@ -25,6 +30,7 @@ const canShareFiles = ref(false)
 const fileName = ref('pennant-calculator.png')
 
 async function generate() {
+  const team = props.team
   status.value = 'generating'
   try {
     const canvas = renderShareImageCanvas(props.imageData)
@@ -45,6 +51,8 @@ async function generate() {
       canShareFiles.value = false
     }
     status.value = 'ready'
+    generatedTeam = team
+    track('share_image_generate', { team })
   } catch {
     status.value = 'error'
   }
@@ -52,6 +60,7 @@ async function generate() {
 
 function download() {
   if (!canvasEl.value) return
+  const team = generatedTeam
   canvasEl.value.toBlob((blob) => {
     if (!blob) return
     const url = URL.createObjectURL(blob)
@@ -60,6 +69,7 @@ function download() {
     a.download = fileName.value
     document.body.appendChild(a)
     a.click()
+    track('share_image_download', { team })
     a.remove()
     URL.revokeObjectURL(url)
   }, 'image/png')

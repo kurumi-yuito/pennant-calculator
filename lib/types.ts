@@ -18,10 +18,24 @@ export type RemainingHeadToHead = Record<string, Record<string, number>>
 
 export type LeagueStandings = {
   league: LeagueId
-  /** 順位表に書かれている「○年○月○日 現在」 */
+  /**
+   * 実効の基準日ラベル（「○年○月○日」）。
+   * 勝敗表ページ自体の基準日（sourceAsOfLabel）より後に終了した NPB 公式試合結果が
+   * あれば、それを差分反映した後の最新日付になる（server/api/standings.get.ts）。
+   * 差分反映が無ければ sourceAsOfLabel と同じ。UI はこちらを表示する。
+   */
   asOfLabel: string
   /** asOfLabel を ISO 日付 (YYYY-MM-DD) にしたもの。解析できなければ null */
   asOfDate: string | null
+  /** 勝敗表ページ (https://npb.jp/games/<year>/) 自体の「○年○月○日 現在」（差分反映前・未加工） */
+  sourceAsOfLabel: string
+  /** sourceAsOfLabel を ISO 日付にしたもの */
+  sourceAsOfDate: string | null
+  /**
+   * asOfDate の時点で、その日の試合がまだ全部終了していない可能性がある場合 true。
+   * （＝終了済みの試合だけを反映しているが、同日にまだ結果が出ていない試合が残っている）
+   */
+  isPartialDay: boolean
   teams: TeamStanding[]
   /**
    * 残り直接対決数。
